@@ -1,0 +1,190 @@
+<!doctype html><html lang="en"><head><meta charset="UTF-8"><title>股票基金助手</title><link href="../css/popup.css" rel="stylesheet"></head><style>body {
+    margin: 0;
+    font-family: "Helvetica Neue", Helvetica, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "微软雅黑", Arial, sans-serif;
+  }
+
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+    background-color: rgba(240, 240, 240, 1);
+  }
+
+  ::-webkit-scrollbar-track {
+    box-shadow: inset 0 0 0px rgba(240, 240, 240, 0.5);
+    border-radius: 10px;
+    background-color: rgba(240, 240, 240, 0.5);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    border-radius: 10px;
+    box-shadow: inset 0 0 0px rgba(240, 240, 240, 0.5);
+    background-color: #cccccc;
+  }
+
+  /* 重置select下拉框高度 */
+  .select-popup {
+    max-height: 200px;
+    overflow-y: scroll;
+  }
+
+  .el-select-dropdown__wrap {
+    max-height: 200px;
+  }
+
+  .cell {
+    color: #444;
+    padding-right: 0px !important;
+    padding-left: 0px !important;
+  }
+
+  .medium .cell {
+    font-size: 14px !important;
+  }
+
+  .small .cell {
+    font-size: 13px !important;
+  }
+
+  .mini .cell {
+    font-size: 12px !important;
+  }
+
+  .mini .el-table--mini td,
+  .el-table--mini th {
+    padding: 2px 0;
+  }
+
+  .input {
+    -webkit-appearance: none;
+    background-color: #FFF;
+    background-image: none;
+    border-radius: 4px;
+    border: 1px solid #DCDFE6;
+    -webkit-box-sizing: border-box;
+    box-sizing: border-box;
+    color: #606266;
+    display: inline-block;
+    font-size: inherit;
+    height: 40px;
+    line-height: 40px;
+    outline: 0;
+    padding: 0 15px;
+    -webkit-transition: border-color .2s cubic-bezier(.645, .045, .355, 1);
+    transition: border-color .2s cubic-bezier(.645, .045, .355, 1);
+    width: 100%;
+    height: 28px;
+    line-height: 28px;
+  }
+
+  .up {
+    color: #f56c6c;
+    font-weight: bold;
+  }
+
+  .down {
+    color: #4eb61b;
+    font-weight: bold;
+  }
+
+  .red-point {
+    background-color: #fd3f3f;
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+
+  .btn {
+    display: inline-block;
+    line-height: 1;
+    cursor: pointer;
+    background: #fff;
+    padding: 4px 4px;
+    border-radius: 3px;
+    font-size: 12px;
+    color: #000000;
+    margin: 0 4px;
+    outline: none;
+    border: 1px solid #dcdfe6;
+  }
+
+  .btn-up {
+    color: #f56c6c;
+    border-color: #f56c6c;
+  }
+
+  .btn-down {
+    color: #4eb61b;
+    border-color: #4eb61b;
+  }
+
+  /* 设置组件中的数据 */
+  .badge .el-radio-button__inner {
+    padding: 7px 10px !important;
+  }
+
+  .el-table__expanded-cell {
+    padding: 8px !important;
+  }
+
+  .icon {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    background-color: #999;
+    color: #fff;
+    border-radius: 50%;
+    line-height: 16px;
+    text-align: center;
+  }
+
+  .move {
+    cursor: move;
+    color: #666666;
+    margin-left: 6px;
+  }
+
+  .to_top {
+    font-size: 16px;
+    transform:rotate(180deg);
+    cursor: pointer;
+    color: #666666;
+  }
+
+  .drag-host td {
+    background-color: #dfdfdf !important;
+  }
+
+  .el-dialog__body {
+    padding: 8px !important;
+  }
+
+  html[theme="dark-mode"] {
+    filter: invert(90%) hue-rotate(180deg);
+  }
+
+  html {
+    transition: color 300ms, background-color 300ms;
+  }
+
+  .el-tabs--border-card>.el-tabs__content {
+    padding: 8px;
+  }
+
+  .el-table--mini td,
+  .el-table--mini th {
+    padding: 4px 0;
+  }
+
+  .link {
+    font-size: 14px;
+    color: #409eff;
+    cursor: pointer;
+  }
+
+  .el-drawer:focus {
+    outline: none;
+  }</style><body><div id="app"></div><script src="../js/runtime-safe.js"></script><script src="../js/vendor.bundleffaa9c15a409c9965772.js"></script><script src="../popup/popup.ffaa9c15.js"></script></body></html>
