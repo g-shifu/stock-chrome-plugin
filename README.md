@@ -21,6 +21,12 @@
 
 ## 安装方式
 
+### 方式一：Chrome 应用商店安装（推荐）
+
+直接从 [Chrome 应用商店](https://chromewebstore.google.com/detail/kkpggfodnhcpnmpajjbfckcpjmfabnak) 安装，自动更新，省心省力。
+
+### 方式二：手动安装
+
 1. 下载本仓库代码（点击右上角绿色 **Code** 按钮 → **Download ZIP**）
 2. 解压到任意文件夹
 3. 打开 Chrome 浏览器，地址栏输入 `chrome://extensions/`
