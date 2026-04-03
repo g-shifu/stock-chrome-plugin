@@ -4388,7 +4388,7 @@ class StockData {
    */
   onFiledMap(item, ownData) {
     // 判断是否为停盘股票，如果是停盘则把昨收盘价展示出来
-    const {
+    let {
       f2,
       f3,
       f4,
@@ -4399,6 +4399,7 @@ class StockData {
       f12
     } = item;
     if (f2 === 0 && f3 === 0 && f4 === 0) {
+      f2 = f18;
       item.f2 = f18;
     }
     const {

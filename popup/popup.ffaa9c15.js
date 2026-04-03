@@ -16853,7 +16853,7 @@ class StockData {
    */
   onFiledMap(item, ownData) {
     // 判断是否为停盘股票，如果是停盘则把昨收盘价展示出来
-    const {
+    let {
       f2,
       f3,
       f4,
@@ -16864,6 +16864,7 @@ class StockData {
       f12
     } = item;
     if (f2 === 0 && f3 === 0 && f4 === 0) {
+      f2 = f18;
       item.f2 = f18;
     }
     const {
@@ -66292,6 +66293,7 @@ var util = __webpack_require__(12);
     rowDrop() {
       // 此时找到的元素是要拖拽元素的父容器
       const tbody = document.querySelector(".fund-table tbody");
+      if (!tbody) return;
       const _this = this;
       sortable_esm.create(tbody, {
         //  指定父元素下可被拖拽的子元素
@@ -68411,6 +68413,7 @@ const StockData = stockYield["a" /* default */].StockData.init();
     rowDrop() {
       // 此时找到的元素是要拖拽元素的父容器
       const target = document.querySelector(".intex-item-con");
+      if (!target) return;
       const _this = this;
       sortable_esm.create(target, {
         //  指定父元素下可被拖拽的子元素
@@ -69191,6 +69194,7 @@ const isShowCut = "all" === "all";
     rowDrop() {
       // 此时找到的元素是要拖拽元素的父容器
       const tbody = document.querySelector(".stock-table tbody");
+      if (!tbody) return;
       const _this = this;
       sortable_esm.create(tbody, {
         //  指定父元素下可被拖拽的子元素
@@ -71398,9 +71402,11 @@ if (!window.TDAPP) {
 const stock = new stockYield["a" /* default */].StockData();
 window.stock = stock;
 stock.startPoll(15 * 1000);
+stock.startPollRquest(15 * 1000);
 const fund = new fundData["a" /* default */]();
 window.fund = fund;
 fund.startPoll(5 * 1000);
+fund.startPollRquest(15 * 1000);
 
 // 接收 background 每 15 秒推送的最新股票行情，驱动 popup 内数据实时更新
 chrome.runtime.onMessage.addListener(function(message) {
