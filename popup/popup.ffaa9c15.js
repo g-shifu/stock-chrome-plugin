@@ -16623,7 +16623,13 @@ class StockData {
    * 获取当前分组自选数据
    */
   getOwnDatas() {
-    let stockItemList = JSON.parse(localStorage.getItem('stockGroup') || '[]');
+    let stockItemList = [];
+    try {
+      stockItemList = JSON.parse(localStorage.getItem('stockGroup') || '[]');
+    } catch (e) {
+      stockItemList = [];
+    }
+    if (!Array.isArray(stockItemList)) stockItemList = [];
     return (stockItemList[this.groupIndex] || {
       name: '默认分组',
       data: []
@@ -16634,7 +16640,13 @@ class StockData {
    * 获取分组数据
    */
   getOwnGroupDatas() {
-    let stockGroup = JSON.parse(localStorage.getItem('stockGroup') || '[]');
+    let stockGroup = [];
+    try {
+      stockGroup = JSON.parse(localStorage.getItem('stockGroup') || '[]');
+    } catch (e) {
+      stockGroup = [];
+    }
+    if (!Array.isArray(stockGroup)) stockGroup = [];
     if (stockGroup.length === 0) {
       stockGroup = [{
         data: [],
@@ -16702,7 +16714,20 @@ class StockData {
     const datas = this.getAllPollCacheData();
     // 从全部轮询缓存中获取 获取自选的数据
     const ownData = this.getOwnDatas();
-    return this.onCodesFilterPollData(ownData, datas);
+    const result = this.onCodesFilterPollData(ownData, datas);
+    // 对没有命中轮询的项，从上次富化缓存恢复（避免轮询空窗期闪空白）
+    try {
+      var cached = JSON.parse(localStorage.getItem('stockEnrichedCache'));
+      if (cached && Array.isArray(cached)) {
+        result.forEach(function(item, i) {
+          if (item.price === undefined || item.price === null) {
+            var cachedItem = cached.find(function(c) { return c.code === item.code; });
+            if (cachedItem) result[i] = cachedItem;
+          }
+        });
+      }
+    } catch (e) {}
+    return result;
   }
 
   /**
@@ -16751,6 +16776,8 @@ class StockData {
    */
   updateOwnPollCacheData() {
     const data = this.getOwnPollCacheData();
+    // 缓存富化后的数据，避免轮询空窗期显示空白
+    try { localStorage.setItem('stockEnrichedCache', JSON.stringify(data)); } catch (e) {}
     this.publish('ownPollUpdate', data);
     this.publish('ownPollUpdate_bg', data);
     // 有实时价格时持久化到 chrome.storage.local，供 SW 重启后立即恢复角标（不依赖消息时序）
@@ -16769,9 +16796,13 @@ class StockData {
    * 获取全部轮序的缓存数据（包含非当前显示的自选）
    */
   getAllPollCacheData() {
-    return (JSON.parse(localStorage.getItem("stockPollData")) || {
-      data: []
-    }).data || [];
+    try {
+      return (JSON.parse(localStorage.getItem("stockPollData")) || {
+        data: []
+      }).data || [];
+    } catch (e) {
+      return [];
+    }
   }
 
   /**
@@ -36558,7 +36589,13 @@ class FundData {
    * 获取分组数据
    */
   getOwnGroupDatas() {
-    let groups = JSON.parse(localStorage.getItem('fundGroup') || '[]');
+    let groups = [];
+    try {
+      groups = JSON.parse(localStorage.getItem('fundGroup') || '[]');
+    } catch (e) {
+      groups = [];
+    }
+    if (!Array.isArray(groups)) groups = [];
     if (groups.length === 0) {
       groups = [{
         data: [],
@@ -36627,7 +36664,20 @@ class FundData {
     const datas = this.getAllPollCacheData();
     // 从全部轮询缓存中获取 获取自选的数据
     const ownData = this.getOwnDatas();
-    return this.onCodesFilterPollData(ownData, datas);
+    const result = this.onCodesFilterPollData(ownData, datas);
+    // 对没有命中轮询的项，从上次富化缓存恢复
+    try {
+      var cached = JSON.parse(localStorage.getItem('fundEnrichedCache'));
+      if (cached && Array.isArray(cached)) {
+        result.forEach(function(item, i) {
+          if (item.gsz === undefined || item.gsz === null) {
+            var cachedItem = cached.find(function(c) { return c.code === item.code; });
+            if (cachedItem) result[i] = cachedItem;
+          }
+        });
+      }
+    } catch (e) {}
+    return result;
   }
 
   /**
@@ -36646,6 +36696,8 @@ class FundData {
    */
   updateOwnPollCacheData() {
     const data = this.getOwnPollCacheData();
+    // 缓存富化后的数据，避免轮询空窗期显示空白
+    try { localStorage.setItem('fundEnrichedCache', JSON.stringify(data)); } catch (e) {}
     this.publish('ownPollUpdate', data);
     this.publish('ownPollUpdate_bg', data);
     // 有估值数据时持久化到 chrome.storage.local，供 SW 重启后立即恢复角标
@@ -36662,9 +36714,13 @@ class FundData {
    * 获取全部轮序的缓存数据（包含非当前显示的自选）
    */
   getAllPollCacheData() {
-    return (JSON.parse(localStorage.getItem("fundPollData")) || {
-      data: []
-    }).data || [];
+    try {
+      return (JSON.parse(localStorage.getItem("fundPollData")) || {
+        data: []
+      }).data || [];
+    } catch (e) {
+      return [];
+    }
   }
 
   /**
@@ -68692,7 +68748,7 @@ var Stockvue_type_template_id_02ac4cfe_scoped_true_render = function render() {
     attrs: {
       "label": "涨跌额",
       "sortable": "",
-      "sort-method": (a, b) => b.zdf_price - a.zdf_price,
+      "sort-method": (a, b) => a.zdf_price - b.zdf_price,
       "width": "80",
       "prop": "zdf_price",
       "align": "right"
@@ -68710,7 +68766,7 @@ var Stockvue_type_template_id_02ac4cfe_scoped_true_render = function render() {
     attrs: {
       "label": "涨跌幅",
       "sortable": "",
-      "sort-method": (a, b) => b.zdf - a.zdf,
+      "sort-method": (a, b) => a.zdf - b.zdf,
       "width": "80",
       "prop": "zdf",
       "align": "right"
@@ -69354,6 +69410,7 @@ const isShowCut = "all" === "all";
       // 验证该股票是否能正确的获取信息
       window.stock.getStockInfo(`${target_item.MktNum}.${target_item.Code}`).then(res => {
         if (res.data.data) {
+          const diff = res.data.data.diff && res.data.data.diff[0];
           const result = window.stock.add({
             name: target_item.Name,
             code: target_item.Code,
@@ -69366,16 +69423,20 @@ const isShowCut = "all" === "all";
           }
           this.options = [];
           this.stockcode = "";
-          // 编辑模式下 ownPollUpdate 事件不刷新列表，需手动同步
+          // 先拉取缓存数据（新股票可能还没轮询数据）
           this.dataList = window.stock.getOwnPollCacheData();
+          // 立即用验证API返回的数据填充新股票，避免等待轮询导致显示空白
+          if (diff) {
+            const newIdx = this.dataList.findIndex(item => item.code === target_item.Code);
+            if (newIdx > -1 && !this.dataList[newIdx].price) {
+              const enriched = window.stock.onFiledMap(diff, this.dataList[newIdx]);
+              this.$set(this.dataList, newIdx, enriched);
+            }
+          }
         } else {
           this.$message.error("该股票可能为新发股票，暂无数据！");
         }
       });
-      // .catch((error) => {
-      //   console.log(error);
-      //   this.$message.error("无法获取该股票信息！");
-      // });
     },
 
     // 聚合获取所有的股票数据
@@ -69916,39 +69977,7 @@ var Statisticsvue_type_template_id_6384f56c_scoped_true_render = function render
     class: _vm.stockFundAllYield >= 0 ? 'up' : 'down'
   }, [_vm._v("\n                " + _vm._s(_vm.stockFundAllYield ? `${_vm.stockFundAllYield}%` : "0"))])]), _vm._v(" "), _c('td', [_vm._v(_vm._s((_vm.stockAllPosition + _vm.fundAllPosition).toFixed(2)))])]) : _vm._e()]), _vm._v(" "), _vm.showStockGains ? _c('p', {
     staticClass: "remarks"
-  }, [_vm._v("\n          备注：美、港股收益已进行汇率转化(如果没有转化请重新添加该股票)\n        ")]) : _vm._e()]), _vm._v(" "), _c('div', {
-    staticClass: "sort"
-  }, [_c('div', {
-    directives: [{
-      name: "loading",
-      rawName: "v-loading",
-      value: _vm.rankYieldLoading,
-      expression: "rankYieldLoading"
-    }],
-    staticClass: "left card"
-  }, [[_c('p', [_vm._v("今日收益率超越了")]), _vm._v(" "), _vm.isLogin ? _c('p', {
-    staticClass: "num"
-  }, [_vm._v(_vm._s(_vm.yieldRank || "--"))]) : _c('p', {
-    staticClass: "no_login"
-  }, [_c('el-button', {
-    attrs: {
-      "size": "mini",
-      "type": "primary",
-      "plain": ""
-    },
-    on: {
-      "click": _vm.handleShowTool
-    }
-  }, [_vm._v("您暂未登录，登录后查看排名")])], 1), _vm._v(" "), _c('p', [_vm._v("活跃用户")])]], 2), _vm._v(" "), false ? undefined : _vm._e(), _vm._v(" "), false ? undefined : _vm._e()]), _vm._v(" "), _vm.open_account_text !== 0 ? _c('div', {
-    staticClass: "footer card adCon",
-    on: {
-      "click": _vm.onOpenAd
-    }
-  }, [_c('a', {
-    attrs: {
-      "rel": "noopener"
-    }
-  }, [_vm._v(_vm._s(_vm.open_account_text))])]) : _vm._e()])])]);
+  }, [_vm._v("\n          备注：美、港股收益已进行汇率转化(如果没有转化请重新添加该股票)\n        ")]) : _vm._e()])])])]);
 };
 var Statisticsvue_type_template_id_6384f56c_scoped_true_staticRenderFns = [];
 
@@ -70061,8 +70090,6 @@ const RankYieldInit = util_rankYield.init();
       //排名loading
       yieldRank: "",
       // 排名
-      open_account_url: "https://mp.weixin.qq.com/s/EpepDpI2OMuk_2ZEIW1Eaw",
-      open_account_text: "用户福利！在线开户享VIP费率(股票万1，ETF万0.6)",
       isLogin: !!localStorage.getItem("token")
     };
   },
@@ -70140,12 +70167,6 @@ const RankYieldInit = util_rankYield.init();
     }
   },
   methods: {
-    onOpenAd() {
-      TDAPP.onEvent("点击广告", '收益面板');
-      setTimeout(() => {
-        window.open(this.open_account_url);
-      }, 300);
-    },
     /**
      * 计算股票收益
      */
@@ -70220,17 +70241,6 @@ const RankYieldInit = util_rankYield.init();
       //   }
       // });
 
-      // 更新配置
-      this.fetchConfig();
-    },
-    // 获取配置
-    fetchConfig() {
-      const {
-        open_account_url = "https://mp.weixin.qq.com/s/EpepDpI2OMuk_2ZEIW1Eaw",
-        open_account_text = "用户福利！在线开户享VIP费率(股票万1，ETF万0.6)"
-      } = JSON.parse(localStorage.getItem("app_config") || "{}");
-      this.open_account_url = open_account_url;
-      this.open_account_text = open_account_text;
     }
   }
 });
@@ -71191,14 +71201,6 @@ const Appvue_type_script_lang_js_version = chrome.runtime.getManifest().version;
         } = data;
         document.querySelector("#app").style.minHeight = minHeight || "600px";
         document.querySelector("#app").style.minWidth = minWidth || "auto";
-      });
-
-      // 加载配置文件
-      const url = "https://www.topnamei.top/home/configzs.json";
-      this.$axios.get(url).then(res => {
-        if (res.status === 200) {
-          localStorage.setItem("app_config", JSON.stringify(res.data));
-        }
       });
     },
     // 数据统计接口
