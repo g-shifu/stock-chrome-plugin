@@ -71134,7 +71134,9 @@ const Appvue_type_script_lang_js_version = chrome.runtime.getManifest().version;
       allGains: 0,
       fontSizeClass: "medium",
       isShowHeadIndex: true,
-      isShowCompoents: false // 提高首屏渲染速度，默认隐藏不需要第一时间渲染的组件
+      isShowCompoents: false, // 提高首屏渲染速度，默认隐藏不需要第一时间渲染的组件
+      hasUpdate: false,
+      latestVersion: ""
     };
   },
 
@@ -71142,6 +71144,8 @@ const Appvue_type_script_lang_js_version = chrome.runtime.getManifest().version;
     // 处理开始样式 事件监听 加载配置等
     this.handleData();
     try { var port = chrome.runtime.connect(); } catch(e) {}
+    // 检测是否有新版本
+    this.checkVersionUpdate();
   },
   mounted() {
     this.handleInitData();
@@ -71229,6 +71233,37 @@ const Appvue_type_script_lang_js_version = chrome.runtime.getManifest().version;
     },
     emitCloseUpdataLog() {
       this.containerClass = "container";
+    },
+    checkVersionUpdate() {
+      var _this = this;
+      var curVer = chrome.runtime.getManifest().version;
+      fetch("https://chromewebstore.google.com/detail/kkpggfodnhcpnmpajjbfckcpjmfabnak?hl=en", { cache: "no-cache" }).then(function(r) { return r.text(); }).then(function(html) {
+        var m = html.match(/Version<\/div><div class="[^"]*">(\d+\.\d+\.\d+)<\/div>/);
+        if (m && _this.compareVersion(m[1], curVer) > 0) {
+          _this.hasUpdate = true;
+          _this.latestVersion = m[1];
+          setTimeout(function() {
+            var appEl = document.querySelector("#app");
+            if (appEl && !document.querySelector(".version-update-badge")) {
+              var badge = document.createElement("div");
+              badge.className = "version-update-badge";
+              badge.innerHTML = '发现新版本 ' + m[1];
+              badge.style.cssText = "position:fixed;bottom:4px;left:50%;transform:translateX(-50%);background:#409EFF;color:#fff;padding:3px 12px;border-radius:10px;font-size:11px;z-index:9999;cursor:pointer;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,0.2);";
+              badge.onclick = function() { window.open("https://chromewebstore.google.com/detail/kkpggfodnhcpnmpajjbfckcpjmfabnak"); };
+              appEl.appendChild(badge);
+            }
+          }, 1500);
+        }
+      }).catch(function() {});
+    },
+    compareVersion(v1, v2) {
+      var a = v1.split(".").map(Number);
+      var b = v2.split(".").map(Number);
+      for (var i = 0; i < Math.max(a.length, b.length); i++) {
+        if ((a[i] || 0) > (b[i] || 0)) return 1;
+        if ((a[i] || 0) < (b[i] || 0)) return -1;
+      }
+      return 0;
     }
   }
 });
