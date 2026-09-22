@@ -32,6 +32,22 @@ var localStorage = (function() {
   };
 }());
 
+// popup 调仓只写 chrome.storage.local，SW 内存 shim 不会自动更新。
+// 必须在这里同步，否则后台轮询会用旧持仓把角标盖回去。
+try {
+  chrome.storage.onChanged.addListener(function(changes, area) {
+    if (area !== 'local') return;
+    if (changes.stockGroup_cache && changes.stockGroup_cache.newValue) {
+      localStorage.setItem('stockGroup', changes.stockGroup_cache.newValue);
+      try { if (window.stock) window.stock.updateOwnPollCacheData(); } catch (e) {}
+    }
+    if (changes.fundGroup_cache && changes.fundGroup_cache.newValue) {
+      localStorage.setItem('fundGroup', changes.fundGroup_cache.newValue);
+      try { if (window.fund) window.fund.updateOwnPollCacheData(); } catch (e) {}
+    }
+  });
+} catch (e) {}
+
 // 4. XMLHttpRequest shim using fetch (axios needs this)
 if (typeof XMLHttpRequest === 'undefined') {
   globalThis.XMLHttpRequest = function() {
@@ -1845,17 +1861,16 @@ class FundData {
    */
   async fetchFundData() {
     try {
-      // SW 重启后内存 shim 里 fundGroup 为空，先从 chrome.storage.local 恢复
-      if (this.getOwnDatas().length === 0) {
-        await new Promise(resolve => {
-          chrome.storage.local.get('fundGroup_cache', res => {
-            if (res.fundGroup_cache) {
-              localStorage.setItem('fundGroup', res.fundGroup_cache);
-            }
-            resolve();
-          });
+      // 每次轮询都从 chrome.storage.local 拉最新持仓。
+      // popup 调仓后 SW 内存 shim 可能仍是旧数据，只在列表为空时恢复会继续用旧仓位算角标。
+      await new Promise(resolve => {
+        chrome.storage.local.get('fundGroup_cache', res => {
+          if (res.fundGroup_cache) {
+            localStorage.setItem('fundGroup', res.fundGroup_cache);
+          }
+          resolve();
         });
-      }
+      });
       // 获取自选
       const fundItemList = this.getOwnDatas();
       const strFundlist = fundItemList.map(val => val.code).join(",");
@@ -3176,21 +3191,76 @@ const StockYield = stockYield["a" /* default */].StockYield.init();
   // popup 推送过来的含持仓信息的基金完整数据缓存，用于背景轮询时补充 num/cost
   let _lastPopupFundData = null;
 
+  // 以最新持仓列表为准，只从行情缓存借价格。
+  // 这样删标的/清仓不会被旧缓存整包盖回去。
+  function mergeHoldingFields(priceData, holdingData, fields) {
+    if (!Array.isArray(holdingData)) return Array.isArray(priceData) ? priceData : [];
+    if (!Array.isArray(priceData) || priceData.length === 0) return holdingData;
+    const priceMap = {};
+    priceData.forEach(item => {
+      if (item && item.code != null) priceMap[String(item.code)] = item;
+    });
+    return holdingData.map(h => {
+      const p = priceMap[String(h && h.code)];
+      if (!p) return h;
+      const next = Object.assign({}, p);
+      fields.forEach(f => {
+        next[f] = h[f];
+      });
+      return next;
+    });
+  }
+  function getGroupHoldings(storageKey, indexKey) {
+    try {
+      const groups = JSON.parse(localStorage.getItem(storageKey) || '[]');
+      const idx = +localStorage.getItem(indexKey) || 0;
+      return (groups[idx] && groups[idx].data) || [];
+    } catch (e) {
+      return [];
+    }
+  }
+
   // 监听股票变化 包括 指数
   window.stock.on("ownPollUpdate_bg", data => {
     // 设置指数的角标内容
     setIndexBrowserActionTitle();
-    // 处理更新后的股票数据
-    // background 自身的 stockGroup 无 initPrice/num，用 popup 推过来的缓存数据替代
-    const hasHoldings = data.some(item => item.num && +item.num > 0);
-    onStockData(hasHoldings ? data : (_lastPopupStockData || data));
+    const list = Array.isArray(data) ? data : [];
+    const hasPrice = list.some(item => item.price);
+    if (hasPrice) {
+      _lastPopupStockData = list;
+      onStockData(list);
+      try { chrome.storage.local.set({ stockPollData_bg_cache: JSON.stringify(list) }); } catch (e) {}
+      return;
+    }
+    // 本次没有行情：保留上次价格，但必须套上最新持仓（含清仓）
+    if (_lastPopupStockData) {
+      const merged = mergeHoldingFields(_lastPopupStockData, list, ['num', 'initPrice', 'isTodybuy', 'StockType']);
+      _lastPopupStockData = merged;
+      onStockData(merged);
+      try { chrome.storage.local.set({ stockPollData_bg_cache: JSON.stringify(merged) }); } catch (e) {}
+    } else {
+      onStockData(list);
+    }
   });
 
   // 监听基金变化
   window.fund.on("ownPollUpdate_bg", data => {
-    // background 自身的 fundGroup 无 num/cost，用 popup 推过来的缓存数据替代
-    const hasHoldings = data.some(item => item.num && +item.num > 0);
-    onFundData(hasHoldings ? data : (_lastPopupFundData || data));
+    const list = Array.isArray(data) ? data : [];
+    const hasQuote = list.some(item => item.gsz);
+    if (hasQuote) {
+      _lastPopupFundData = list;
+      onFundData(list);
+      try { chrome.storage.local.set({ fundPollData_bg_cache: JSON.stringify(list) }); } catch (e) {}
+      return;
+    }
+    if (_lastPopupFundData) {
+      const merged = mergeHoldingFields(_lastPopupFundData, list, ['num', 'cost']);
+      _lastPopupFundData = merged;
+      onFundData(merged);
+      try { chrome.storage.local.set({ fundPollData_bg_cache: JSON.stringify(merged) }); } catch (e) {}
+    } else {
+      onFundData(list);
+    }
   });
 
   // 监听事件
@@ -3215,8 +3285,10 @@ const StockYield = stockYield["a" /* default */].StockYield.init();
               try {
                 var cached = JSON.parse(res.stockPollData_bg_cache);
                 if (Array.isArray(cached) && cached.some(function(item) { return item.price; })) {
-                  _lastPopupStockData = cached;
-                  onStockData(cached);
+                  var holdings = getGroupHoldings('stockGroup', 'stockCurGroupIndex');
+                  var merged = mergeHoldingFields(cached, holdings, ['num', 'initPrice', 'isTodybuy', 'StockType']);
+                  _lastPopupStockData = merged;
+                  onStockData(merged);
                   restored = true;
                 }
               } catch(e) {}
@@ -3225,8 +3297,10 @@ const StockYield = stockYield["a" /* default */].StockYield.init();
               try {
                 var cached = JSON.parse(res.fundPollData_bg_cache);
                 if (Array.isArray(cached) && cached.length > 0) {
-                  _lastPopupFundData = cached;
-                  onFundData(cached);
+                  var holdings = getGroupHoldings('fundGroup', 'fundCurGroupIndex');
+                  var merged = mergeHoldingFields(cached, holdings, ['num', 'cost']);
+                  _lastPopupFundData = merged;
+                  onFundData(merged);
                   restored = true;
                 }
               } catch(e) {}
@@ -3243,17 +3317,34 @@ const StockYield = stockYield["a" /* default */].StockYield.init();
     }
     // popup 轮询后把含持仓信息的完整数据推过来，直接用于计算角标收益
     if (request.type === "stock__ownPollUpdate" && request.data) {
-      _lastPopupStockData = request.data;
-      // popup 初次推送时可能只有持仓信息而无实时价格，此时跳过重算
-      // 避免将后台已正确计算的股票收益归零，等有价格数据再更新角标
-      const hasPriceData = request.data.some(item => item.price);
+      const list = request.data;
+      const hasPriceData = list.some(item => item.price);
       if (hasPriceData) {
-        onStockData(request.data);
+        _lastPopupStockData = list;
+        onStockData(list);
+      } else if (_lastPopupStockData) {
+        // 调仓瞬间可能还没有行情，用最新持仓覆盖旧缓存后立刻重算
+        _lastPopupStockData = mergeHoldingFields(_lastPopupStockData, list, ['num', 'initPrice', 'isTodybuy', 'StockType']);
+        onStockData(_lastPopupStockData);
+      } else {
+        _lastPopupStockData = list;
       }
+      try { chrome.storage.local.set({ stockPollData_bg_cache: JSON.stringify(_lastPopupStockData) }); } catch (e) {}
     }
     if (request.type === "fund.__fundPollData" && request.data) {
-      _lastPopupFundData = request.data;
-      onFundData(request.data);
+      const list = request.data;
+      const hasQuote = list.some(item => item.gsz);
+      if (hasQuote) {
+        _lastPopupFundData = list;
+        onFundData(list);
+      } else if (_lastPopupFundData) {
+        _lastPopupFundData = mergeHoldingFields(_lastPopupFundData, list, ['num', 'cost']);
+        onFundData(_lastPopupFundData);
+      } else {
+        _lastPopupFundData = list;
+        onFundData(list);
+      }
+      try { chrome.storage.local.set({ fundPollData_bg_cache: JSON.stringify(_lastPopupFundData) }); } catch (e) {}
     }
   });
 
@@ -3277,8 +3368,10 @@ const StockYield = stockYield["a" /* default */].StockYield.init();
         try {
           const cached = JSON.parse(res.stockPollData_bg_cache);
           if (Array.isArray(cached) && cached.some(item => item.price)) {
-            _lastPopupStockData = cached;
-            onStockData(cached);
+            const holdings = getGroupHoldings('stockGroup', 'stockCurGroupIndex');
+            const merged = mergeHoldingFields(cached, holdings, ['num', 'initPrice', 'isTodybuy', 'StockType']);
+            _lastPopupStockData = merged;
+            onStockData(merged);
           }
         } catch(e) {}
       }
@@ -3290,8 +3383,10 @@ const StockYield = stockYield["a" /* default */].StockYield.init();
         try {
           const cached = JSON.parse(res.fundPollData_bg_cache);
           if (Array.isArray(cached) && cached.length > 0) {
-            _lastPopupFundData = cached;
-            onFundData(cached);
+            const holdings = getGroupHoldings('fundGroup', 'fundCurGroupIndex');
+            const merged = mergeHoldingFields(cached, holdings, ['num', 'cost']);
+            _lastPopupFundData = merged;
+            onFundData(merged);
           }
         } catch(e) {}
       }
@@ -4319,17 +4414,16 @@ class StockData {
    */
   async fetchStockData() {
     try {
-      // SW 重启后内存 shim 里 stockGroup 为空，先尝试从 chrome.storage.local 恢复
-      if (this.getOwnDatas().length === 0) {
-        await new Promise(resolve => {
-          chrome.storage.local.get('stockGroup_cache', res => {
-            if (res.stockGroup_cache) {
-              localStorage.setItem('stockGroup', res.stockGroup_cache);
-            }
-            resolve();
-          });
+      // 每次轮询都从 chrome.storage.local 拉最新持仓。
+      // popup 调仓后 SW 内存 shim 可能仍是旧数据，只在列表为空时恢复会继续用旧仓位算角标。
+      await new Promise(resolve => {
+        chrome.storage.local.get('stockGroup_cache', res => {
+          if (res.stockGroup_cache) {
+            localStorage.setItem('stockGroup', res.stockGroup_cache);
+          }
+          resolve();
         });
-      }
+      });
       // 获取自选
       const stockItemList = this.getOwnDatas();
       // 获取指数

@@ -16715,14 +16715,15 @@ class StockData {
     // 从全部轮询缓存中获取 获取自选的数据
     const ownData = this.getOwnDatas();
     const result = this.onCodesFilterPollData(ownData, datas);
-    // 对没有命中轮询的项，从上次富化缓存恢复（避免轮询空窗期闪空白）
+    // 对没有命中轮询的项，从上次富化缓存补行情（避免空窗期闪空白）。
+    // 只借价格字段，持仓以当前 ownData 为准，避免调仓后把旧仓位写回角标缓存。
     try {
       var cached = JSON.parse(localStorage.getItem('stockEnrichedCache'));
       if (cached && Array.isArray(cached)) {
         result.forEach(function(item, i) {
           if (item.price === undefined || item.price === null) {
             var cachedItem = cached.find(function(c) { return c.code === item.code; });
-            if (cachedItem) result[i] = cachedItem;
+            if (cachedItem) result[i] = Object.assign({}, cachedItem, item);
           }
         });
       }
@@ -17027,7 +17028,12 @@ class StockData {
   del(code, callback, index) {
     if (callback === undefined) callback = () => {};
     const data = this.getOwnDatas();
-    const targetIndex = (index !== undefined && index >= 0) ? index : this.find(code).index;
+    // 表格排序后 $index 是视觉顺序，不能直接当存储下标。
+    // 只有下标对应的正是这只股票时才用，否则按 code 查找。
+    let targetIndex = this.find(code).index;
+    if (index !== undefined && index >= 0 && data[index] && data[index].code === code) {
+      targetIndex = index;
+    }
     if (targetIndex > -1) {
       data.splice(targetIndex, 1);
       callback(data);
@@ -17039,11 +17045,14 @@ class StockData {
 
   /**
    * 修改某一支股票，比如 持仓价格 持仓数量
-   * @param {*} index 精确行索引，优先使用；未传则按 code 查找第一条
+   * @param {*} index 仅当与 code 对应时才用，避免排序后改错行
    */
   update(code, newData, index) {
     const data = this.getOwnDatas();
-    const targetIndex = (index !== undefined && index >= 0) ? index : this.find(code).index;
+    let targetIndex = this.find(code).index;
+    if (index !== undefined && index >= 0 && data[index] && data[index].code === code) {
+      targetIndex = index;
+    }
     if (targetIndex > -1) {
       data[targetIndex] = {
         ...data[targetIndex],
@@ -36665,14 +36674,14 @@ class FundData {
     // 从全部轮询缓存中获取 获取自选的数据
     const ownData = this.getOwnDatas();
     const result = this.onCodesFilterPollData(ownData, datas);
-    // 对没有命中轮询的项，从上次富化缓存恢复
+    // 对没有命中轮询的项，从上次富化缓存补估值。只借行情，持仓以当前 ownData 为准。
     try {
       var cached = JSON.parse(localStorage.getItem('fundEnrichedCache'));
       if (cached && Array.isArray(cached)) {
         result.forEach(function(item, i) {
           if (item.gsz === undefined || item.gsz === null) {
             var cachedItem = cached.find(function(c) { return c.code === item.code; });
-            if (cachedItem) result[i] = cachedItem;
+            if (cachedItem) result[i] = Object.assign({}, cachedItem, item);
           }
         });
       }
@@ -36941,7 +36950,11 @@ class FundData {
   del(code, callback, index) {
     if (callback === undefined) callback = () => {};
     const data = this.getOwnDatas();
-    const targetIndex = (index !== undefined && index >= 0) ? index : this.find(code).index;
+    // 表格排序后 $index 是视觉顺序，不能直接当存储下标。
+    let targetIndex = this.find(code).index;
+    if (index !== undefined && index >= 0 && data[index] && data[index].code === code) {
+      targetIndex = index;
+    }
     if (targetIndex > -1) {
       data.splice(targetIndex, 1);
       callback(data);
@@ -36953,11 +36966,14 @@ class FundData {
 
   /**
    * 修改某一支基金，比如 持仓价格 持仓数量
-   * @param {*} index 精确行索引，优先使用；未传则按 code 查找第一条
+   * @param {*} index 仅当与 code 对应时才用，避免排序后改错行
    */
   update(code, newData, index) {
     const data = this.getOwnDatas();
-    const targetIndex = (index !== undefined && index >= 0) ? index : this.find(code).index;
+    let targetIndex = this.find(code).index;
+    if (index !== undefined && index >= 0 && data[index] && data[index].code === code) {
+      targetIndex = index;
+    }
     if (targetIndex > -1) {
       data[targetIndex] = {
         ...data[targetIndex],
@@ -61007,7 +61023,7 @@ var Fundvue_type_template_id_07aaabf9_scoped_true_render = function render() {
           staticClass: "el-icon-download to_top",
           on: {
             "click": function ($event) {
-              return _vm.toTop(scope.$index);
+              return _vm.toTop(scope.row);
             }
           }
         })];
@@ -66322,11 +66338,19 @@ var util = __webpack_require__(12);
   watch: {
     isEdit(val) {
       if (val) {
+        this.clearTableSort();
         this.rowDrop();
       }
     }
   },
   methods: {
+    clearTableSort() {
+      this.$nextTick(() => {
+        const table = this.$el && this.$el.querySelector('.fund-table');
+        const vueTable = table && table.__vue__;
+        if (vueTable && vueTable.clearSort) vueTable.clearSort();
+      });
+    },
     /**
      * 保留几位小数渲染
      */
@@ -66354,14 +66378,20 @@ var util = __webpack_require__(12);
       sortable_esm.create(tbody, {
         //  指定父元素下可被拖拽的子元素
         draggable: ".el-table__row",
+        filter: ".el-table__expanded-cell",
         handle: ".move",
         ghostClass: "drag-host",
         onEnd(_ref) {
           let {
+            item,
             newIndex,
             oldIndex
           } = _ref;
-          _this.onSort(newIndex, oldIndex);
+          const fromCode = item && item.__vue__ && item.__vue__.row && item.__vue__.row.code;
+          const fromIndex = fromCode ? _this.dataList.findIndex(r => r.code === fromCode) : oldIndex;
+          if (fromIndex > -1 && newIndex > -1 && fromIndex !== newIndex) {
+            _this.onSort(newIndex, fromIndex);
+          }
         }
       });
     },
@@ -66404,10 +66434,10 @@ var util = __webpack_require__(12);
       }
     },
     // 修改基金持有份额
-    changeField(field, item, index) {
+    changeField(field, item) {
       window.fund.update(item.code, {
         [field]: item[field]
-      }, index);
+      });
     },
     // 计算当前持仓价
     calculateCost(val) {
@@ -66451,9 +66481,11 @@ var util = __webpack_require__(12);
         }
       });
     },
-    // 置顶
-    toTop(oldIndex) {
-      this.onSort(0, oldIndex);
+    // 置顶：按代码定位，避免表格排序后 $index 对不上存储顺序
+    toTop(rowOrIndex) {
+      const code = rowOrIndex && typeof rowOrIndex === 'object' ? rowOrIndex.code : (this.dataList[rowOrIndex] && this.dataList[rowOrIndex].code);
+      const oldIndex = this.dataList.findIndex(item => item.code === code);
+      if (oldIndex > -1) this.onSort(0, oldIndex);
     },
     // 排序
     onSort(newIndex, oldIndex) {
@@ -66462,14 +66494,14 @@ var util = __webpack_require__(12);
       data.splice(newIndex, 0, currRow);
       this.dataList = window.fund.setOwnDatas(data);
     },
-    // 删除
-    dlt(code, index) {
-      const result = window.fund.del(code, data => {
-        this.dataList.splice(index, 1);
-      }, index);
+    // 删除：按代码定位，避免表格排序后 $index 对不上存储顺序
+    dlt(code) {
+      const result = window.fund.del(code);
       if (result === -1) {
         this.$message.error("删除有误！");
+        return;
       }
+      this.dataList = this.dataList.filter(item => item.code !== code);
     },
     // 点击基金跳转到详情页
     handleToDetail(row) {
@@ -69068,7 +69100,7 @@ var Stockvue_type_template_id_02ac4cfe_scoped_true_render = function render() {
           staticClass: "el-icon-download to_top",
           on: {
             "click": function ($event) {
-              return _vm.toTop(scope.$index);
+              return _vm.toTop(scope.row);
             }
           }
         })];
@@ -69212,11 +69244,19 @@ const isShowCut = "all" === "all";
     },
     isEdit(val) {
       if (val) {
+        this.clearTableSort();
         this.rowDrop();
       }
     }
   },
   methods: {
+    clearTableSort() {
+      this.$nextTick(() => {
+        const table = this.$el && this.$el.querySelector('.stock-table');
+        const vueTable = table && table.__vue__;
+        if (vueTable && vueTable.clearSort) vueTable.clearSort();
+      });
+    },
     toFullChart(item) {
       const {
         code,
@@ -69255,37 +69295,48 @@ const isShowCut = "all" === "all";
       sortable_esm.create(tbody, {
         //  指定父元素下可被拖拽的子元素
         draggable: ".el-table__row",
+        filter: ".el-table__expanded-cell",
         handle: ".move",
         ghostClass: "drag-host",
         onEnd(_ref) {
           let {
+            item,
             newIndex,
             oldIndex
           } = _ref;
-          _this.onSort(newIndex, oldIndex);
+          const fromCode = item && item.__vue__ && item.__vue__.row && item.__vue__.row.code;
+          const fromIndex = fromCode ? _this.dataList.findIndex(r => r.code === fromCode) : oldIndex;
+          if (fromIndex > -1 && newIndex > -1 && fromIndex !== newIndex) {
+            _this.onSort(newIndex, fromIndex);
+          }
         }
       });
     },
-    handleChangeTodybuy(row, index) {
+    handleChangeTodybuy(row) {
+      const targetIndex = this.dataList.findIndex(item => item.code === row.code);
       if (row.isTodybuy === this.today) {
         // 先快速响应用户操作 再去修改实际值
-        this.$set(this.dataList, index, {
-          ...row,
-          isTodybuy: null
-        });
+        if (targetIndex > -1) {
+          this.$set(this.dataList, targetIndex, {
+            ...row,
+            isTodybuy: null
+          });
+        }
         this.changeField("isTodybuy", {
           ...row,
           isTodybuy: null
-        }, index);
+        });
       } else {
-        this.$set(this.dataList, index, {
-          ...row,
-          isTodybuy: this.today
-        });
+        if (targetIndex > -1) {
+          this.$set(this.dataList, targetIndex, {
+            ...row,
+            isTodybuy: this.today
+          });
+        }
         this.changeField("isTodybuy", {
           ...row,
           isTodybuy: this.today
-        }, index);
+        });
       }
     },
     // 切换面板
@@ -69350,14 +69401,16 @@ const isShowCut = "all" === "all";
       }
     },
     // 修改字段
-    changeField(field, item, index) {
+    changeField(field, item) {
       window.stock.update(item.code, {
         [field]: item[field]
-      }, index);
+      });
     },
-    // 置顶
-    toTop(oldIndex) {
-      this.onSort(0, oldIndex);
+    // 置顶：按代码定位，避免表格排序后 $index 对不上存储顺序
+    toTop(rowOrIndex) {
+      const code = rowOrIndex && typeof rowOrIndex === 'object' ? rowOrIndex.code : (this.dataList[rowOrIndex] && this.dataList[rowOrIndex].code);
+      const oldIndex = this.dataList.findIndex(item => item.code === code);
+      if (oldIndex > -1) this.onSort(0, oldIndex);
     },
     // 排序
     onSort(newIndex, oldIndex) {
@@ -69366,16 +69419,15 @@ const isShowCut = "all" === "all";
       data.splice(newIndex, 0, currRow);
       this.dataList = window.stock.setOwnDatas(data);
     },
-    // 删除
-    dlt(row, index) {
-      this.stopNotify(row).finally(() => {
-        const result = window.stock.del(row.code, data => {
-          this.dataList.splice(index, 1);
-        }, index);
-        if (result === -1) {
-          this.$message.error("删除有误！");
-        }
-      });
+    // 删除：按代码定位，避免表格排序后 $index 对不上存储顺序
+    dlt(row) {
+      const result = window.stock.del(row.code);
+      if (result === -1) {
+        this.$message.error("删除有误！");
+        return;
+      }
+      this.dataList = this.dataList.filter(item => item.code !== row.code);
+      this.stopNotify(row);
     },
     /**
      * 删除股票时，禁用该股票通知
