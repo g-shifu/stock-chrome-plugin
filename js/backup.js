@@ -239,22 +239,49 @@
     return Promise.resolve(opts.dir || loadHandle()).then(dir => backupToDirectory(dir, opts));
   }
 
-  function maybeAutoBackup() {
+  function fileExists(dir, name) {
+    return dir.getFileHandle(name).then(() => true).catch(() => false);
+  }
+
+  function maybeAutoBackup(options) {
+    const opts = options || {};
+    const record = result => {
+      return setSettings({
+        lastAutoBackupAt: new Date().toISOString(),
+        lastAutoBackupResult: (result && result.ok) ? 'ok' : ((result && result.skipped) || 'error')
+      }).then(() => result);
+    };
     return getSettings().then(settings => {
       if (settings.autoBackup === false) return { skipped: 'disabled' };
       if (!isTradingDay()) return { skipped: 'not-trading-day' };
-      if (settings.lastBackupDate === dateStr()) return { skipped: 'done-today' };
-      return loadHandle().then(dir => {
+      return (opts.dir ? Promise.resolve(opts.dir) : loadHandle()).then(dir => {
         if (!dir) return { skipped: 'no-directory' };
         return hasPermission(dir, false).then(granted => {
           if (!granted) return { skipped: 'permission' };
-          return backupToDirectory(dir, {});
+          const name = FILE_PREFIX + dateStr() + '.json';
+          return fileExists(dir, name).then(exists => {
+            // 记录说今天备份过，但文件被删了，仍然要补写
+            if (settings.lastBackupDate === dateStr() && exists) return { skipped: 'done-today' };
+            return backupToDirectory(dir, {});
+          });
         });
       });
-    }).catch(err => {
+    }).then(record).catch(err => {
       console.warn('[backup] 自动备份失败', err);
-      return { skipped: 'error', error: String(err) };
+      return record({ skipped: 'error', error: String(err) });
     });
+  }
+
+  function resetBackupRecord() {
+    return getSettings().then(settings => {
+      const next = Object.assign({}, settings);
+      delete next.lastBackupAt;
+      delete next.lastBackupDate;
+      delete next.lastBackupName;
+      delete next.lastBackupError;
+      delete next.lastBackupToastDate;
+      return new Promise(resolve => chrome.storage.local.set({ [SETTINGS_KEY]: next }, resolve));
+    }).then(() => new Promise(resolve => chrome.storage.local.remove('stockBackupNotifyAt', resolve)));
   }
 
   // ---------- 设置页：并入「数据文件备份」 ----------
@@ -277,6 +304,8 @@
       '.sfb-status{color:#909399;font-size:12px}',
       '.sfb-status.sfb-ok{color:#67c23a}',
       '.sfb-status.sfb-err{color:#f56c6c}',
+      '.sfb-reset{padding:0;border:none;background:none;color:#909399;font-size:12px;cursor:pointer}',
+      '.sfb-reset:hover{color:#409eff;text-decoration:underline}',
       '.sfb-tip{margin-top:6px;color:#909399;font-size:12px;line-height:1.6}'
     ].join('');
     document.head.appendChild(style);
@@ -296,6 +325,7 @@
         '<label class="sfb-auto"><input type="checkbox" id="sfb-auto-input"> 每个交易日自动备份</label>' +
         '<button type="button" class="sfb-btn sfb-primary" id="sfb-backup">立即备份</button>' +
         '<span class="sfb-status" id="sfb-status"></span>' +
+        '<button type="button" class="sfb-reset" id="sfb-reset">清除备份记录</button>' +
       '</div>' +
       '<div class="sfb-tip">自动备份会在每个交易日第一次打开扩展（弹窗或本页）时写入所选目录；备份文件与上方「导出备份」格式一致，可直接用「导入备份」恢复。</div>';
     return block;
@@ -332,6 +362,16 @@
     return true;
   }
 
+  const AUTO_RESULT_LABELS = {
+    ok: '已自动备份',
+    'done-today': '今天已备份',
+    'no-directory': '未选择目录',
+    permission: '目录未授权',
+    disabled: '自动备份已关闭',
+    'not-trading-day': '非交易日',
+    error: '失败'
+  };
+
   function bindInlineBlock(block) {
     const dirEl = block.querySelector('#sfb-dir');
     const autoInput = block.querySelector('#sfb-auto-input');
@@ -352,11 +392,21 @@
             dirEl.textContent = granted ? dir.name : dir.name + '（授权已失效，请重新选择目录）';
           });
         }
-        if (settings.lastBackupAt) {
-          setStatus('上次备份：' + timeStr(new Date(settings.lastBackupAt)), 'ok');
-        } else {
-          setStatus('尚未备份');
+        let text = settings.lastBackupAt
+          ? '上次备份：' + timeStr(new Date(settings.lastBackupAt))
+          : '尚未备份';
+        if (settings.lastAutoBackupAt) {
+          const label = AUTO_RESULT_LABELS[settings.lastAutoBackupResult] || settings.lastAutoBackupResult || '';
+          text += ' · 自动检查：' + timeStr(new Date(settings.lastAutoBackupAt)) + ' ' + label;
         }
+        const failed = settings.lastAutoBackupResult === 'permission' || settings.lastAutoBackupResult === 'error';
+        setStatus(text, failed ? 'err' : settings.lastBackupAt ? 'ok' : '');
+      });
+    }
+
+    if (chrome.storage.onChanged) {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === 'local' && changes[SETTINGS_KEY]) refresh();
       });
     }
 
@@ -388,6 +438,12 @@
       }).catch(err => {
         if (err && err.name === 'AbortError') return;
         setStatus('选择目录失败：' + (err && err.message || err), 'err');
+      });
+    });
+
+    block.querySelector('#sfb-reset').addEventListener('click', () => {
+      resetBackupRecord().then(() => {
+        refresh();
       });
     });
 
@@ -504,6 +560,10 @@
         }
       });
     }
+    // 切回设置页时再检查一次，方便在重新授权后立即补备份
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) maybeAutoBackup();
+    });
     maybeAutoBackup();
   } else if (isPopupPage) {
     maybeAutoBackup();
@@ -516,6 +576,7 @@
     loadHandle: loadHandle,
     backupNow: backupNow,
     maybeAutoBackup: maybeAutoBackup,
+    resetBackupRecord: resetBackupRecord,
     daysSince: daysSince,
     REMIND_DAYS: REMIND_DAYS
   };
