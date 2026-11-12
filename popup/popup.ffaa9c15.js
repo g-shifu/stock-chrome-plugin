@@ -12487,27 +12487,10 @@ class IndexedDB {
     this.db = {};
   }
   initDb() {
-    return new Promise((resolve, reject) => {
-      let request = window.indexedDB.open(this.databaseName, this.dbVersion);
-      request.onerror = event => {
-        console.log('数据库打开报错');
-        reject({
-          event: 'onerror'
-        });
-      };
-      request.onsuccess = event => {
-        this.db = event.target.result;
-        console.log('数据库打开成功');
-        resolve({
-          event: 'onsuccess'
-        });
-      };
-      request.onupgradeneeded = event => {
-        console.log('数据库打开成功-升级');
-        this.db = event.target.result;
-        resolve({
-          event: 'onupgradeneeded'
-        });
+    return this.openDB().then(db => {
+      this.db = db;
+      return {
+        event: 'onsuccess'
       };
     });
   }
@@ -12536,18 +12519,76 @@ class IndexedDB {
   }
 
   /**
+   * 保证表结构存在，只在版本升级事务里调用
+   */
+  ensureSchema(db) {
+    if (!db.objectStoreNames.contains('notify')) {
+      const notify = db.createObjectStore('notify', {
+        keyPath: 'id'
+      });
+      notify.createIndex('name', 'name', { unique: false });
+      notify.createIndex('marketCode', 'marketCode', { unique: false });
+      notify.createIndex('creatTime', 'creatTime', { unique: false });
+      notify.createIndex('lastUpdateTime', 'lastUpdateTime', { unique: false });
+      notify.createIndex('lastExecutionTime', 'lastExecutionTime', { unique: false });
+      notify.createIndex('describe', 'describe', { unique: false });
+      notify.createIndex('value', 'value', { unique: false });
+      notify.createIndex('type', 'type', { unique: false });
+      notify.createIndex('status', 'status', { unique: false });
+      notify.createIndex('marketCode_type_status', ['marketCode', 'type', 'status'], { unique: false });
+      notify.createIndex('marketCode_type', ['marketCode', 'type'], { unique: false });
+      notify.createIndex('type_status', ['type', 'status'], { unique: false });
+    }
+    if (!db.objectStoreNames.contains('stockInfo')) {
+      const stockInfo = db.createObjectStore('stockInfo', {
+        autoIncrement: true
+      });
+      stockInfo.createIndex('name', 'name', { unique: false });
+      stockInfo.createIndex('marketCode', 'marketCode', { unique: false });
+      stockInfo.createIndex('creatTime', 'creatTime', { unique: false });
+      stockInfo.createIndex('zdf', 'zdf', { unique: false });
+      stockInfo.createIndex('zdf_price', 'zdf_price', { unique: false });
+      stockInfo.createIndex('price', 'price', { unique: false });
+    }
+  }
+  hasRequiredTables(db) {
+    return db.objectStoreNames.contains('notify') && db.objectStoreNames.contains('stockInfo');
+  }
+
+  /**
    * 打开数据库
-   * @returns 
+   * 不传固定版本号：版本号已是最新但表缺失（旧升级失败留下的空库）时，
+   * 升一个版本触发 onupgradeneeded 补建表，否则会一直报找不到表。
+   * @returns
    */
   openDB() {
     return new Promise((resolve, reject) => {
-      let request = window.indexedDB.open(this.databaseName, this.dbVersion);
-      request.onerror = event => {
-        reject("IndexedDB数据库打开错误，" + event);
+      const open = version => {
+        const request = version ? window.indexedDB.open(this.databaseName, version) : window.indexedDB.open(this.databaseName);
+        request.onupgradeneeded = event => {
+          console.log('数据库升级，检查表结构');
+          this.ensureSchema(event.target.result);
+        };
+        request.onblocked = () => {
+          console.log('数据库升级被其他页面占用，等待连接关闭');
+        };
+        request.onerror = event => {
+          reject("IndexedDB数据库打开错误，" + event);
+        };
+        request.onsuccess = event => {
+          const db = event.target.result;
+          // 其他页面升级版本时主动让出连接，避免升级被阻塞
+          db.onversionchange = () => db.close();
+          if (!this.hasRequiredTables(db)) {
+            const nextVersion = db.version + 1;
+            db.close();
+            open(nextVersion);
+            return;
+          }
+          resolve(db);
+        };
       };
-      request.onsuccess = event => {
-        resolve(event.target.result);
-      };
+      open();
     });
   }
   closeDb() {
@@ -16652,9 +16693,48 @@ class StockData {
         data: [],
         name: '默认分组'
       }];
-      this.onEditGroup(stockGroup);
+      // localStorage 可能因浏览器崩溃丢失。先从 chrome.storage.local 的副本恢复，
+      // 恢复结果回来之前不写空默认，避免把唯一副本覆盖掉。
+      this.restoreOwnGroupFromCache(stockGroup);
     }
     return stockGroup;
+  }
+
+  /**
+   * localStorage 丢失时尝试从 chrome.storage.local 恢复股票分组
+   * @param {*} defaultGroup 没有可用缓存时写入的空分组
+   */
+  restoreOwnGroupFromCache(defaultGroup) {
+    if (this.restoringGroup) return;
+    this.restoringGroup = true;
+    const useDefault = () => {
+      this.restoringGroup = false;
+      this.onEditGroup(defaultGroup);
+    };
+    if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+      useDefault();
+      return;
+    }
+    try {
+      chrome.storage.local.get('stockGroup_cache', res => {
+        const cached = res && res.stockGroup_cache;
+        let hasData = false;
+        try {
+          const groups = JSON.parse(cached);
+          hasData = Array.isArray(groups) && groups.some(group => group && Array.isArray(group.data) && group.data.length > 0);
+        } catch (e) {
+          hasData = false;
+        }
+        if (hasData) {
+          localStorage.setItem('stockGroup', cached);
+          location.reload();
+          return;
+        }
+        useDefault();
+      });
+    } catch (e) {
+      useDefault();
+    }
   }
 
   /**
@@ -16737,7 +16817,35 @@ class StockData {
   getIndexPollCacheData() {
     const datas = this.getAllPollCacheData();
     const stockIndexs = this.getIndexItemList();
-    return this.onCodesFilterPollData(stockIndexs, datas);
+    const result = this.onCodesFilterPollData(stockIndexs, datas);
+    // 轮询数据里没有的指数会保留 {market, code, name}，顶部指数条取 f2/f3/f4 时就是 undefined。
+    // 用上一次的行情兜底，仍然没有则置空由模板显示 "--"。
+    let cached = [];
+    try {
+      cached = JSON.parse(localStorage.getItem('indexEnrichedCache') || '[]');
+      if (!Array.isArray(cached)) cached = [];
+    } catch (e) {
+      cached = [];
+    }
+    const isEmptyQuote = value => value === undefined || value === null || value === '' || value === '-';
+    result.forEach(item => {
+      if (isEmptyQuote(item.f2)) {
+        const last = cached.find(c => c && String(c.code) === String(item.code));
+        if (last) {
+          item.f2 = last.f2;
+          item.f3 = last.f3;
+          item.f4 = last.f4;
+        }
+      }
+      if (item.f14 === undefined || item.f14 === null || item.f14 === '') item.f14 = item.name || '';
+      if (isEmptyQuote(item.f2)) item.f2 = null;
+      if (isEmptyQuote(item.f3)) item.f3 = null;
+      if (isEmptyQuote(item.f4)) item.f4 = null;
+    });
+    if (result.length) {
+      try { localStorage.setItem('indexEnrichedCache', JSON.stringify(result)); } catch (e) {}
+    }
+    return result;
   }
 
   /**
@@ -16748,7 +16856,8 @@ class StockData {
     try {
       const indexItemList_ = JSON.parse(indexItemList);
       if (!Array.isArray(indexItemList_)) {
-        localStorage.setItem("indexItemList", JSON.stringify(defaultIndexItemList));
+        // localStorage 可能因崩溃丢失，先尝试从 chrome.storage.local 副本恢复
+        this.restoreIndexListFromCache();
         return defaultIndexItemList;
       }
       if (indexItemList_.length < 7) {
@@ -16756,8 +16865,46 @@ class StockData {
       }
       return JSON.parse(indexItemList);
     } catch (error) {
-      localStorage.setItem("indexItemList", JSON.stringify(defaultIndexItemList));
+      this.restoreIndexListFromCache();
       return defaultIndexItemList;
+    }
+  }
+
+  /**
+   * localStorage 丢失时尝试从 chrome.storage.local 恢复指数列表
+   */
+  restoreIndexListFromCache() {
+    if (this.restoringIndexList || this.indexListRestored) return;
+    this.restoringIndexList = true;
+    const useDefault = () => {
+      this.restoringIndexList = false;
+      this.indexListRestored = true;
+      if (!localStorage.getItem('indexItemList')) {
+        localStorage.setItem("indexItemList", JSON.stringify(defaultIndexItemList));
+      }
+    };
+    if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+      useDefault();
+      return;
+    }
+    try {
+      chrome.storage.local.get('indexItemList_cache', res => {
+        const cached = res && res.indexItemList_cache;
+        let list = null;
+        try {
+          list = JSON.parse(cached);
+        } catch (e) {
+          list = null;
+        }
+        if (Array.isArray(list) && list.length >= 7) {
+          localStorage.setItem('indexItemList', cached);
+          location.reload();
+          return;
+        }
+        useDefault();
+      });
+    } catch (e) {
+      useDefault();
     }
   }
 
@@ -16975,6 +17122,11 @@ class StockData {
     const _stockGroup = window.localStorage.getItem('stockGroup');
     if (_stockGroup) {
       chrome.storage.local.set({ stockGroup_cache: _stockGroup });
+    }
+    // 后台按自己的 indexItemList 拉指数行情，必须同步过去，否则自定义指数在后台推送的数据里会缺失
+    const _indexItemList = window.localStorage.getItem('indexItemList');
+    if (_indexItemList) {
+      chrome.storage.local.set({ indexItemList_cache: _indexItemList });
     }
     this.fetchStockData();
   }
@@ -36610,10 +36762,48 @@ class FundData {
         data: [],
         name: '默认分组'
       }];
-      // 保存分组
-      this.onEditGroup(groups);
+      // localStorage 可能因浏览器崩溃丢失。先从 chrome.storage.local 的副本恢复，
+      // 恢复结果回来之前不写空默认，避免把唯一副本覆盖掉。
+      this.restoreOwnGroupFromCache(groups);
     }
     return groups;
+  }
+
+  /**
+   * localStorage 丢失时尝试从 chrome.storage.local 恢复基金分组
+   * @param {*} defaultGroup 没有可用缓存时写入的空分组
+   */
+  restoreOwnGroupFromCache(defaultGroup) {
+    if (this.restoringGroup) return;
+    this.restoringGroup = true;
+    const useDefault = () => {
+      this.restoringGroup = false;
+      this.onEditGroup(defaultGroup);
+    };
+    if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+      useDefault();
+      return;
+    }
+    try {
+      chrome.storage.local.get('fundGroup_cache', res => {
+        const cached = res && res.fundGroup_cache;
+        let hasData = false;
+        try {
+          const groups = JSON.parse(cached);
+          hasData = Array.isArray(groups) && groups.some(group => group && Array.isArray(group.data) && group.data.length > 0);
+        } catch (e) {
+          hasData = false;
+        }
+        if (hasData) {
+          localStorage.setItem('fundGroup', cached);
+          location.reload();
+          return;
+        }
+        useDefault();
+      });
+    } catch (e) {
+      useDefault();
+    }
   }
 
   /**
@@ -66568,7 +66758,7 @@ var Platevue_type_template_id_2a28d58d_scoped_true_render = function render() {
     staticClass: "tab-row tab-row-top"
   }, _vm._l(_vm.seciData, function (el) {
     return _c('div', {
-      key: el.f12,
+      key: el.code,
       staticClass: "tab-col",
       attrs: {
         "title": "点击查看详细走势图"
@@ -66584,23 +66774,23 @@ var Platevue_type_template_id_2a28d58d_scoped_true_render = function render() {
         "title": "点击查看详细走势图"
       }
     }, [_vm._v(_vm._s(el.f14))]), _vm._v(" "), _c('p', {
-      class: el.f3 >= 0 ? 'up price' : 'down price',
+      class: el.f3 == null ? '' : el.f3 >= 0 ? 'up price' : 'down price',
       attrs: {
         "title": "点击查看详细走势图"
       }
-    }, [_vm._v("\n          " + _vm._s(el.f2) + "\n        ")]), _vm._v(" "), _c('div', {
+    }, [_vm._v("\n          " + _vm._s(el.f2 == null ? '--' : el.f2) + "\n        ")]), _vm._v(" "), _c('div', {
       staticClass: "info"
     }, [_c('p', {
-      class: el.f3 >= 0 ? 'up' : 'down',
+      class: el.f3 == null ? '' : el.f3 >= 0 ? 'up' : 'down',
       attrs: {
         "title": "点击查看详细走势图"
       }
-    }, [_vm._v("\n            " + _vm._s(el.f4) + "\n          ")]), _vm._v("\n            \n          "), _c('p', {
-      class: el.f3 >= 0 ? 'up' : 'down',
+    }, [_vm._v("\n            " + _vm._s(el.f4 == null ? '--' : el.f4) + "\n          ")]), _vm._v("\n            \n          "), _c('p', {
+      class: el.f3 == null ? '' : el.f3 >= 0 ? 'up' : 'down',
       attrs: {
         "title": "点击查看详细走势图"
       }
-    }, [_vm._v("\n            " + _vm._s(el.f3) + "%\n          ")])])]);
+    }, [_vm._v("\n            " + _vm._s(el.f3 == null ? '--' : el.f3 + '%') + "\n          ")])])]);
   }), 0), _vm._v(" "), _c('div', {
     staticClass: "more",
     on: {
@@ -66610,7 +66800,7 @@ var Platevue_type_template_id_2a28d58d_scoped_true_render = function render() {
     staticClass: "tab-row more-con"
   }, [_vm._l(_vm.moreSeciData, function (el) {
     return _c('div', {
-      key: el.f12,
+      key: el.code,
       staticClass: "tab-col tab-col-more",
       attrs: {
         "title": "点击查看详细走势图"
@@ -66626,23 +66816,23 @@ var Platevue_type_template_id_2a28d58d_scoped_true_render = function render() {
         "title": "点击查看详细走势图"
       }
     }, [_vm._v(_vm._s(el.f14))]), _vm._v(" "), _c('p', {
-      class: el.f3 >= 0 ? 'up price' : 'down price',
+      class: el.f3 == null ? '' : el.f3 >= 0 ? 'up price' : 'down price',
       attrs: {
         "title": "点击查看详细走势图"
       }
-    }, [_vm._v("\n          " + _vm._s(el.f2) + "\n        ")]), _vm._v(" "), _c('div', {
+    }, [_vm._v("\n          " + _vm._s(el.f2 == null ? '--' : el.f2) + "\n        ")]), _vm._v(" "), _c('div', {
       staticClass: "info"
     }, [_c('p', {
-      class: el.f3 >= 0 ? 'up' : 'down',
+      class: el.f3 == null ? '' : el.f3 >= 0 ? 'up' : 'down',
       attrs: {
         "title": "点击查看详细走势图"
       }
-    }, [_vm._v("\n            " + _vm._s(el.f4) + "\n          ")]), _vm._v("\n            \n          "), _c('p', {
-      class: el.f3 >= 0 ? 'up' : 'down',
+    }, [_vm._v("\n            " + _vm._s(el.f4 == null ? '--' : el.f4) + "\n          ")]), _vm._v("\n            \n          "), _c('p', {
+      class: el.f3 == null ? '' : el.f3 >= 0 ? 'up' : 'down',
       attrs: {
         "title": "点击查看详细走势图"
       }
-    }, [_vm._v("\n            " + _vm._s(el.f3) + "%\n          ")])])]);
+    }, [_vm._v("\n            " + _vm._s(el.f3 == null ? '--' : el.f3 + '%') + "\n          ")])])]);
   }), _vm._v(" "), _c('div', {
     staticClass: "tab-col tab-col-more add-index"
   }, [_c('el-button', {
@@ -68484,13 +68674,19 @@ const StockData = stockYield["a" /* default */].StockData.init();
       const indexItemList = window.stock.getIndexPollCacheData();
       return indexItemList;
     },
+    // 指数列表变更时同步给 background，保证后台轮询包含用户自定义的指数
+    saveIndexItemList(list) {
+      const str = JSON.stringify(list);
+      localStorage.indexItemList = str;
+      chrome.storage.local.set({ indexItemList_cache: str });
+    },
     /**
      * 删除
      */
     del(index) {
       if (this.indexItemList.length > 7) {
         this.indexItemList.splice(index, 1);
-        localStorage.indexItemList = JSON.stringify(this.indexItemList);
+        this.saveIndexItemList(this.indexItemList);
       } else {
         this.$message.warning("最少选择7只指数");
       }
@@ -68515,7 +68711,7 @@ const StockData = stockYield["a" /* default */].StockData.init();
           } = _ref;
           const currRow = _this.indexItemList.splice(oldIndex, 1)[0];
           _this.indexItemList.splice(newIndex, 0, currRow);
-          localStorage.indexItemList = JSON.stringify(_this.indexItemList);
+          _this.saveIndexItemList(_this.indexItemList);
           const nowIndexItemList = [..._this.indexItemList];
           // const indexItemList = this.fetchIndexItemList();
           _this.seciData = nowIndexItemList.splice(0, _this.showNum);
@@ -68570,7 +68766,7 @@ const StockData = stockYield["a" /* default */].StockData.init();
             market: target_item.MktNum
           };
           this.indexItemList.push(nowData);
-          localStorage.indexItemList = JSON.stringify(this.indexItemList);
+          this.saveIndexItemList(this.indexItemList);
           this.stockcode = [];
           this.options = [];
           this.moreSeciData.push({
@@ -70959,7 +71155,8 @@ const isNewUser = !!localStorage.version;
       // 是否开启大盘
       isNewUser,
       // 判断是否为新安装的插件
-      iframeUrl: `http://pu_shu.gitee.io/market_center/#/all_tab?token=${localStorage.token}?form=gpjjzs`,
+      // 数据中心已改为扩展内置页面（market_center/），不再依赖远程 SPA
+      iframeUrl: chrome.runtime.getURL("market_center/index.html"),
       // iframeUrl: `http://localhost:8080/#/all_tab`,
       is_update_data_center: true,
       // 数据中心最后一次更新时间
@@ -71083,20 +71280,9 @@ const isNewUser = !!localStorage.version;
         this.showGains = false;
       }
     },
-    // 获取数据中心更新状态
+    // 数据中心已改为扩展内置页面，不再用远程配置判断更新红点
     dataCenterStatus() {
-      const app_config = JSON.parse(localStorage.getItem("app_config") || "{}");
-      const {
-        last_update,
-        market_center_url
-      } = app_config;
-      this.is_update_data_center = localStorage.data_center_last_updata === last_update;
-      this.data_center_last_updata = last_update;
-
-      // 获取配置的数据中心url
-      if (market_center_url) {
-        this.iframeUrl = `${market_center_url}?token=${localStorage.token}?form=gpjjzs`;
-      }
+      this.is_update_data_center = true;
     },
     // 点击数据中心
     onShowDataCenter() {
@@ -71258,6 +71444,19 @@ const Appvue_type_script_lang_js_version = chrome.runtime.getManifest().version;
         document.querySelector("#app").style.minHeight = minHeight || "600px";
         document.querySelector("#app").style.minWidth = minWidth || "auto";
       });
+
+      // 加载远程配置（数据中心地址等）。此前随广告代码被误删，
+      // 导致 market_center_url 读不到，数据中心回退到已失效的 gitee 地址。
+      this.fetchAppConfig();
+    },
+    // 获取远程配置
+    fetchAppConfig() {
+      this.$axios.get("https://www.topnamei.top/home/configzs.json", { cache: false }).then(res => {
+        if (res.status === 200 && res.data) {
+          localStorage.setItem("app_config", JSON.stringify(res.data));
+          this.dataCenterStatus();
+        }
+      }).catch(() => {});
     },
     // 数据统计接口
     handleStatic(data) {

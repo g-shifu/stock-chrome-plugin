@@ -9916,27 +9916,10 @@
             this.db = {};
         }
         initDb() {
-            return new Promise((resolve, reject) => {
-                let request = window.indexedDB.open(this.databaseName, this.dbVersion);
-                request.onerror = event => {
-                    console.log('数据库打开报错');
-                    reject({
-                        event: 'onerror'
-                    });
-                };
-                request.onsuccess = event => {
-                    this.db = event.target.result;
-                    console.log('数据库打开成功');
-                    resolve({
-                        event: 'onsuccess'
-                    });
-                };
-                request.onupgradeneeded = event => {
-                    console.log('数据库打开成功-升级');
-                    this.db = event.target.result;
-                    resolve({
-                        event: 'onupgradeneeded'
-                    });
+            return this.openDB().then(db => {
+                this.db = db;
+                return {
+                    event: 'onsuccess'
                 };
             });
         }
@@ -9965,18 +9948,76 @@
         }
 
         /**
+         * 保证表结构存在，只在版本升级事务里调用
+         */
+        ensureSchema(db) {
+            if (!db.objectStoreNames.contains('notify')) {
+                const notify = db.createObjectStore('notify', {
+                    keyPath: 'id'
+                });
+                notify.createIndex('name', 'name', { unique: false });
+                notify.createIndex('marketCode', 'marketCode', { unique: false });
+                notify.createIndex('creatTime', 'creatTime', { unique: false });
+                notify.createIndex('lastUpdateTime', 'lastUpdateTime', { unique: false });
+                notify.createIndex('lastExecutionTime', 'lastExecutionTime', { unique: false });
+                notify.createIndex('describe', 'describe', { unique: false });
+                notify.createIndex('value', 'value', { unique: false });
+                notify.createIndex('type', 'type', { unique: false });
+                notify.createIndex('status', 'status', { unique: false });
+                notify.createIndex('marketCode_type_status', ['marketCode', 'type', 'status'], { unique: false });
+                notify.createIndex('marketCode_type', ['marketCode', 'type'], { unique: false });
+                notify.createIndex('type_status', ['type', 'status'], { unique: false });
+            }
+            if (!db.objectStoreNames.contains('stockInfo')) {
+                const stockInfo = db.createObjectStore('stockInfo', {
+                    autoIncrement: true
+                });
+                stockInfo.createIndex('name', 'name', { unique: false });
+                stockInfo.createIndex('marketCode', 'marketCode', { unique: false });
+                stockInfo.createIndex('creatTime', 'creatTime', { unique: false });
+                stockInfo.createIndex('zdf', 'zdf', { unique: false });
+                stockInfo.createIndex('zdf_price', 'zdf_price', { unique: false });
+                stockInfo.createIndex('price', 'price', { unique: false });
+            }
+        }
+        hasRequiredTables(db) {
+            return db.objectStoreNames.contains('notify') && db.objectStoreNames.contains('stockInfo');
+        }
+
+        /**
          * 打开数据库
-         * @returns 
+         * 不传固定版本号：版本号已是最新但表缺失（旧升级失败留下的空库）时，
+         * 升一个版本触发 onupgradeneeded 补建表，否则会一直报找不到表。
+         * @returns
          */
         openDB() {
             return new Promise((resolve, reject) => {
-                let request = window.indexedDB.open(this.databaseName, this.dbVersion);
-                request.onerror = event => {
-                    reject("IndexedDB数据库打开错误，" + event);
+                const open = version => {
+                    const request = version ? window.indexedDB.open(this.databaseName, version) : window.indexedDB.open(this.databaseName);
+                    request.onupgradeneeded = event => {
+                        console.log('数据库升级，检查表结构');
+                        this.ensureSchema(event.target.result);
+                    };
+                    request.onblocked = () => {
+                        console.log('数据库升级被其他页面占用，等待连接关闭');
+                    };
+                    request.onerror = event => {
+                        reject("IndexedDB数据库打开错误，" + event);
+                    };
+                    request.onsuccess = event => {
+                        const db = event.target.result;
+                        // 其他页面升级版本时主动让出连接，避免升级被阻塞
+                        db.onversionchange = () => db.close();
+                        if (!this.hasRequiredTables(db)) {
+                            const nextVersion = db.version + 1;
+                            db.close();
+                            open(nextVersion);
+                            return;
+                        }
+                        resolve(db);
+                    };
                 };
-                request.onsuccess = event => {
-                    resolve(event.target.result);
-                };
+                open();
             });
         }
         closeDb() {
@@ -37482,7 +37523,7 @@
             },
             openHome(type) {
                 const {
-                    vip_page_url = "http://pu_shu.gitee.io/market_center/#/container/home"
+                    vip_page_url = "https://www.topnamei.top/market_center/#/container/home"
                 } = JSON.parse(localStorage.getItem("app_config") || "{}");
                 if (type === "vip") {
                     TDAPP.onEvent("点击VIP", "设置页");

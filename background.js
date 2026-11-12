@@ -45,6 +45,9 @@ try {
       localStorage.setItem('fundGroup', changes.fundGroup_cache.newValue);
       try { if (window.fund) window.fund.updateOwnPollCacheData(); } catch (e) {}
     }
+    if (changes.indexItemList_cache && changes.indexItemList_cache.newValue) {
+      localStorage.setItem('indexItemList', changes.indexItemList_cache.newValue);
+    }
   });
 } catch (e) {}
 
@@ -2149,27 +2152,10 @@ class IndexedDB {
     this.db = {};
   }
   initDb() {
-    return new Promise((resolve, reject) => {
-      let request = window.indexedDB.open(this.databaseName, this.dbVersion);
-      request.onerror = event => {
-        console.log('数据库打开报错');
-        reject({
-          event: 'onerror'
-        });
-      };
-      request.onsuccess = event => {
-        this.db = event.target.result;
-        console.log('数据库打开成功');
-        resolve({
-          event: 'onsuccess'
-        });
-      };
-      request.onupgradeneeded = event => {
-        console.log('数据库打开成功-升级');
-        this.db = event.target.result;
-        resolve({
-          event: 'onupgradeneeded'
-        });
+    return this.openDB().then(db => {
+      this.db = db;
+      return {
+        event: 'onsuccess'
       };
     });
   }
@@ -2198,18 +2184,76 @@ class IndexedDB {
   }
 
   /**
+   * 保证表结构存在，只在版本升级事务里调用
+   */
+  ensureSchema(db) {
+    if (!db.objectStoreNames.contains('notify')) {
+      const notify = db.createObjectStore('notify', {
+        keyPath: 'id'
+      });
+      notify.createIndex('name', 'name', { unique: false });
+      notify.createIndex('marketCode', 'marketCode', { unique: false });
+      notify.createIndex('creatTime', 'creatTime', { unique: false });
+      notify.createIndex('lastUpdateTime', 'lastUpdateTime', { unique: false });
+      notify.createIndex('lastExecutionTime', 'lastExecutionTime', { unique: false });
+      notify.createIndex('describe', 'describe', { unique: false });
+      notify.createIndex('value', 'value', { unique: false });
+      notify.createIndex('type', 'type', { unique: false });
+      notify.createIndex('status', 'status', { unique: false });
+      notify.createIndex('marketCode_type_status', ['marketCode', 'type', 'status'], { unique: false });
+      notify.createIndex('marketCode_type', ['marketCode', 'type'], { unique: false });
+      notify.createIndex('type_status', ['type', 'status'], { unique: false });
+    }
+    if (!db.objectStoreNames.contains('stockInfo')) {
+      const stockInfo = db.createObjectStore('stockInfo', {
+        autoIncrement: true
+      });
+      stockInfo.createIndex('name', 'name', { unique: false });
+      stockInfo.createIndex('marketCode', 'marketCode', { unique: false });
+      stockInfo.createIndex('creatTime', 'creatTime', { unique: false });
+      stockInfo.createIndex('zdf', 'zdf', { unique: false });
+      stockInfo.createIndex('zdf_price', 'zdf_price', { unique: false });
+      stockInfo.createIndex('price', 'price', { unique: false });
+    }
+  }
+  hasRequiredTables(db) {
+    return db.objectStoreNames.contains('notify') && db.objectStoreNames.contains('stockInfo');
+  }
+
+  /**
    * 打开数据库
-   * @returns 
+   * 不传固定版本号：版本号已是最新但表缺失（旧升级失败留下的空库）时，
+   * 升一个版本触发 onupgradeneeded 补建表，否则会一直报找不到表。
+   * @returns
    */
   openDB() {
     return new Promise((resolve, reject) => {
-      let request = window.indexedDB.open(this.databaseName, this.dbVersion);
-      request.onerror = event => {
-        reject("IndexedDB数据库打开错误，" + event);
+      const open = version => {
+        const request = version ? window.indexedDB.open(this.databaseName, version) : window.indexedDB.open(this.databaseName);
+        request.onupgradeneeded = event => {
+          console.log('数据库升级，检查表结构');
+          this.ensureSchema(event.target.result);
+        };
+        request.onblocked = () => {
+          console.log('数据库升级被其他页面占用，等待连接关闭');
+        };
+        request.onerror = event => {
+          reject("IndexedDB数据库打开错误，" + event);
+        };
+        request.onsuccess = event => {
+          const db = event.target.result;
+          // 其他页面升级版本时主动让出连接，避免升级被阻塞
+          db.onversionchange = () => db.close();
+          if (!this.hasRequiredTables(db)) {
+            const nextVersion = db.version + 1;
+            db.close();
+            open(nextVersion);
+            return;
+          }
+          resolve(db);
+        };
       };
-      request.onsuccess = event => {
-        resolve(event.target.result);
-      };
+      open();
     });
   }
   closeDb() {
@@ -4417,9 +4461,14 @@ class StockData {
       // 每次轮询都从 chrome.storage.local 拉最新持仓。
       // popup 调仓后 SW 内存 shim 可能仍是旧数据，只在列表为空时恢复会继续用旧仓位算角标。
       await new Promise(resolve => {
-        chrome.storage.local.get('stockGroup_cache', res => {
+        chrome.storage.local.get(['stockGroup_cache', 'indexItemList_cache'], res => {
           if (res.stockGroup_cache) {
             localStorage.setItem('stockGroup', res.stockGroup_cache);
+          }
+          // 指数列表由 popup 维护，不同步就会一直按默认 7 个指数拉行情，
+          // 推给 popup 后自定义指数取不到数据，顶部指数条显示空/undefined%。
+          if (res.indexItemList_cache) {
+            localStorage.setItem('indexItemList', res.indexItemList_cache);
           }
           resolve();
         });
@@ -5497,3 +5546,71 @@ process.umask = function() { return 0; };
 
 
 }});
+// ===== 自选数据备份提醒 =====
+// 后台无法写用户目录（MV3 service worker 没有 File System Access API），
+// 这里只负责定期提醒；实际写入由 popup / 设置页打开时完成（js/backup.js）。
+(function () {
+  var ALARM_NAME = 'stockBackupRemind';
+  var REMIND_DAYS = 7;
+  var REMIND_INTERVAL_DAYS = 3;
+
+  function ensureBackupAlarm() {
+    try {
+      chrome.alarms.get(ALARM_NAME, function (alarm) {
+        if (!alarm) {
+          chrome.alarms.create(ALARM_NAME, { delayInMinutes: 60, periodInMinutes: 24 * 60 });
+        }
+      });
+    } catch (e) {}
+  }
+
+  function checkBackupReminder() {
+    try {
+      chrome.storage.local.get(['stockBackupSettings', 'stockBackupNotifyAt'], function (res) {
+        var settings = (res && res.stockBackupSettings) || {};
+        var last = settings.lastBackupAt ? new Date(settings.lastBackupAt).getTime() : 0;
+        var days = last ? Math.floor((Date.now() - last) / 86400000) : Infinity;
+        if (days < REMIND_DAYS) return;
+
+        // 单独存提醒时间，避免和设置页写入 lastBackupAt 时互相覆盖
+        var lastNotify = res.stockBackupNotifyAt ? new Date(res.stockBackupNotifyAt).getTime() : 0;
+        if (lastNotify && Date.now() - lastNotify < REMIND_INTERVAL_DAYS * 86400000) return;
+
+        chrome.notifications.create('stockBackupRemind', {
+          type: 'basic',
+          iconUrl: './icons/logo-128.png',
+          title: '自选数据该备份了',
+          message: last
+            ? '已经 ' + days + ' 天没有备份自选数据，点击打开设置进行备份。'
+            : '还没有备份过自选数据，点击打开设置进行备份。'
+        }, function () {
+          void chrome.runtime.lastError;
+          chrome.storage.local.set({ stockBackupNotifyAt: new Date().toISOString() });
+        });
+      });
+    } catch (e) {}
+  }
+
+  function openBackupPanel() {
+    try {
+      chrome.storage.local.set({ backupPanelRequest: Date.now() }, function () {
+        if (chrome.runtime.openOptionsPage) chrome.runtime.openOptionsPage();
+      });
+    } catch (e) {}
+  }
+
+  try {
+    ensureBackupAlarm();
+    chrome.runtime.onInstalled.addListener(ensureBackupAlarm);
+    chrome.runtime.onStartup.addListener(ensureBackupAlarm);
+    chrome.alarms.onAlarm.addListener(function (alarm) {
+      if (alarm && alarm.name === ALARM_NAME) checkBackupReminder();
+    });
+    chrome.notifications.onClicked.addListener(function (id) {
+      if (id === 'stockBackupRemind') openBackupPanel();
+    });
+    chrome.notifications.onButtonClicked.addListener(function (id) {
+      if (id === 'stockBackupRemind') openBackupPanel();
+    });
+  } catch (e) {}
+})();
